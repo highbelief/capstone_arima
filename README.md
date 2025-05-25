@@ -117,5 +117,5 @@ ARIMA 예측 결과
 
 ## 📬 문의
 
-* 담당자: [yourname@yourdomain.com](mailto:yourname@yourdomain.com)
+* 담당자: 국립목포대학교 공과대학 융합소프트웨어학과 스포트라이트팀 팀장
 * 피드백 및 기능 추가 요청은 GitHub Issue 또는 메일로 남겨주세요.
