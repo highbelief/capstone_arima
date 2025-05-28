@@ -44,20 +44,22 @@ FLUSH PRIVILEGES;
 ### 테이블 구조
 
 ```sql
--- 실측 데이터 테이블 (단일 발전소 기준)
-CREATE TABLE IF NOT EXISTS measurement (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    measured_at DATETIME NOT NULL,
-    power_kw FLOAT,
-    cumulative_kwh FLOAT,
-    irradiance_wm2 FLOAT,
-    temperature_c FLOAT,
-    wind_speed_ms FLOAT,
-    forecast_irradiance_wm2 FLOAT,
-    forecast_temperature_c FLOAT,
-    forecast_wind_speed_ms FLOAT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+CREATE TABLE measurement (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,                   -- 고유 식별자 (자동 증가)
+    measured_at DATETIME NOT NULL,                          -- 예보 기준 시간 (오늘 or 내일 시각)
+
+    power_kw FLOAT,                                         -- 실측 발전량 (kW)
+    cumulative_kwh FLOAT,                                   -- 누적 발전량 (kWh)
+    irradiance_wm2 FLOAT,                                   -- 실측 일사량 (W/m²)
+    temperature_c FLOAT,                                    -- 실측 기온 (℃)
+    wind_speed_ms FLOAT,                                    -- 실측 풍속 (m/s)
+
+    forecast_irradiance_wm2 FLOAT,                          -- 예보 일사량 (W/m²)
+    forecast_temperature_c FLOAT,                           -- 예보 기온 (℃)
+    forecast_wind_speed_ms FLOAT,                           -- 예보 풍속 (m/s)
+
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP           -- 데이터 삽입 시각 (자동 기록)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ARIMA 예측 결과 테이블 (익일 예측)
 CREATE TABLE IF NOT EXISTS forecast_arima (
