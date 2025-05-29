@@ -57,46 +57,38 @@ def run_arima_forecast():
         daily_power = daily_power[daily_power > 1000]  # 이상치 제거
         log_power = np.log1p(daily_power)
 
-        # 외생 변수 집계 및 정제
+        # 외생 변수 집계
         weather = df.resample('D').agg({
             'forecast_irradiance_wm2': 'mean',
             'forecast_temperature_c': 'mean',
             'forecast_wind_speed_ms': 'mean'
         })
-        weather = np.log1p(weather).shift(1)
-        weather.replace([np.inf, -np.inf], np.nan, inplace=True)
-        weather = weather.fillna(method='bfill').fillna(method='ffill')
-        weather.dropna(inplace=True)
+        weather = np.log1p(weather).bfill().ffill()
 
-        # 정렬된 인덱스만 사용
-        log_power, weather = log_power.align(weather, join='inner')
-        if log_power.empty or weather.empty:
-            return None, "❌ 정제된 학습 데이터가 부족합니다."
+        today = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
+        forecast_date = today + timedelta(days=1)
 
-        # 모델 학습
-        model = SARIMAX(log_power, exog=weather, order=(2,1,2), seasonal_order=(1,1,1,7))
+        model = SARIMAX(log_power, exog=weather.loc[log_power.index],
+                        order=(2,1,2), seasonal_order=(1,1,1,7))
         model_fit = model.fit(disp=False)
 
-        # 예측 날짜
-        forecast_date = log_power.index[-1] + timedelta(days=1)
         if forecast_date not in weather.index:
-            return None, f"❌ 예보 데이터 부족: {forecast_date.strftime('%Y-%m-%d')} 데이터 없음"
+            exog_next = weather.iloc[[-1]]
+        else:
+            exog_next = weather.loc[[forecast_date]]
 
-        exog_next = weather.loc[[forecast_date]]
         log_forecast = model_fit.forecast(steps=1, exog=exog_next)
         predicted_mwh = float(np.expm1(log_forecast.iloc[0]))
 
-        # 실제값 조회
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT MAX(cumulative_mwh) - MIN(cumulative_mwh) AS actual
                 FROM measurement
                 WHERE DATE(measured_at) = :date
             """), {'date': forecast_date.date()})
-            row = result.fetchone()
+            row = result.mappings().fetchone()
             actual_mwh = row['actual'] if row and row['actual'] is not None else None
 
-        # 평가
         rmse = mae = mape = None
         if actual_mwh is not None:
             rmse = np.sqrt((predicted_mwh - actual_mwh)**2)
