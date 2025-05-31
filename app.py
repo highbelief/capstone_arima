@@ -1,8 +1,8 @@
 from flask import Flask, request, render_template_string
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import create_engine, text
-from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from lightgbm import LGBMRegressor
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -45,41 +45,53 @@ def save_forecast_to_db(forecast_date, predicted_mwh, actual_mwh=None, rmse=None
             'mape': mape
         })
 
-# ARIMA 예측
-def run_arima_forecast():
+# LightGBM 예측 (익일 예보 기반)
+def run_lgbm_forecast():
     df = load_measurements()
     if df.empty:
         return None, "❌ 실측 데이터가 없습니다."
 
     try:
-        # 일일 발전량 집계
-        daily_power = df['cumulative_mwh'].resample('D').agg(lambda x: x.max() - x.min())
-        daily_power = daily_power[daily_power > 1000]  # 이상치 제거
-        log_power = np.log1p(daily_power)
+        # 발전량 집계
+        daily_mwh = df['cumulative_mwh'].resample('D').agg(lambda x: x.max() - x.min())
+        df_daily = df.resample('D').first()  # 하루 단위로 축소 (예보는 하루에 1개라고 가정)
+        df_daily['daily_mwh'] = daily_mwh
 
-        # 외생 변수 집계
-        weather = df.resample('D').agg({
-            'forecast_irradiance_wm2': 'mean',
-            'forecast_temperature_c': 'mean',
-            'forecast_wind_speed_ms': 'mean'
-        })
-        weather = np.log1p(weather).bfill().ffill()
+        # 타겟을 하루 뒤 발전량으로 shift
+        df_daily['target'] = df_daily['daily_mwh'].shift(-1)
 
+        # 날짜 기반 파생 변수 추가
+        df_daily['dayofweek'] = df_daily.index.dayofweek
+        df_daily['month'] = df_daily.index.month
+
+        # 학습용 피처 구성
+        features = df_daily[[
+            'forecast_irradiance_wm2', 'forecast_temperature_c', 'forecast_wind_speed_ms',
+            'dayofweek', 'month']]
+        target = df_daily['target']
+
+        # 결측 제거
+        train_X = features.dropna()
+        train_y = target.loc[train_X.index]
+
+        # 오늘 날짜 기준 예보 (내일 발전량 예측)
         today = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
         forecast_date = today + timedelta(days=1)
 
-        model = SARIMAX(log_power, exog=weather.loc[log_power.index],
-                        order=(2,1,2), seasonal_order=(1,1,1,7))
-        model_fit = model.fit(disp=False)
-
-        if forecast_date not in weather.index:
-            exog_next = weather.iloc[[-1]]
+        if today in features.index:
+            test_X = features.loc[[today]].copy()
         else:
-            exog_next = weather.loc[[forecast_date]]
+            test_X = features.iloc[[-1]].copy()
 
-        log_forecast = model_fit.forecast(steps=1, exog=exog_next)
-        predicted_mwh = float(np.expm1(log_forecast.iloc[0]))
+        test_X['dayofweek'] = forecast_date.weekday()
+        test_X['month'] = forecast_date.month
 
+        # 모델 학습 및 예측
+        model = LGBMRegressor(n_estimators=100)
+        model.fit(train_X, train_y)
+        predicted_mwh = float(model.predict(test_X)[0])
+
+        # 실제값 로드
         with engine.connect() as conn:
             result = conn.execute(text("""
                 SELECT MAX(cumulative_mwh) - MIN(cumulative_mwh) AS actual
@@ -106,12 +118,12 @@ def run_arima_forecast():
 def index():
     forecast_date = predicted_mwh = message = None
     if request.method == "POST":
-        forecast_date, predicted_mwh = run_arima_forecast()
+        forecast_date, predicted_mwh = run_lgbm_forecast()
         if forecast_date is None:
             message = predicted_mwh
 
     html = f"""
-        <h2>ARIMA 예측 시스템</h2>
+        <h2>단기 예측 시스템</h2>
         <form method="post">
             <button type="submit">수동 예측 실행</button>
         </form>
@@ -124,7 +136,7 @@ def index():
 # 스케줄러
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=KST)
-    scheduler.add_job(run_arima_forecast, 'cron', hour=7, minute=30)
+    scheduler.add_job(run_lgbm_forecast, 'cron', hour=7, minute=30)
     scheduler.start()
 
 # 실행
